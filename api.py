@@ -9,6 +9,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 app = Flask(__name__)
 
 @app.route("/train", methods=["POST"])
+@app.route("/train", methods=["POST"])
 def train():
     data = request.get_json()
 
@@ -17,8 +18,6 @@ def train():
 
     dataset = data.get("dataset")
     training = data.get("training")
-    input_prediksi_harian = data.get("input_prediksi_harian")
-    input_prediksi_bulanan = data.get("input_prediksi_bulanan")
 
     if not dataset or not training:
         return jsonify({"status": "error", "message": "Dataset atau training parameter tidak lengkap"}), 400
@@ -32,11 +31,13 @@ def train():
     try:
         df = pd.DataFrame(dataset)
 
-        required_cols = ["pakan_total_kg", "kematian", "afkir", "telur_kg"]
+        required_cols = ["tanggal", "pakan_total_kg", "kematian", "afkir", "telur_kg"]
         for c in required_cols:
             if c not in df.columns:
                 return jsonify({"status": "error", "message": f"Kolom {c} tidak ada"}), 400
 
+        # convert
+        df["tanggal"] = pd.to_datetime(df["tanggal"])
         df["pakan_total_kg"] = df["pakan_total_kg"].astype(float)
         df["kematian"] = df["kematian"].astype(int)
         df["afkir"] = df["afkir"].astype(int)
@@ -67,31 +68,35 @@ def train():
         rmse = np.sqrt(mean_squared_error(y_test, pred))
         r2 = r2_score(y_test, pred)
 
-        # Prediksi harian berdasarkan input
-        pred_harian = None
-        if input_prediksi_harian:
-            pred_harian = model.predict([[
-                float(input_prediksi_harian["pakan_total_kg"]),
-                int(input_prediksi_harian["kematian"]),
-                int(input_prediksi_harian["afkir"])
-            ]])[0]
+        # ===========================
+        # Prediksi Harian (otomatis)
+        # ===========================
+        last_row = X.tail(1)
+        pred_harian = model.predict(last_row)[0]
 
-        # Prediksi bulanan berdasarkan input (sum bulanan)
-        pred_bulanan = None
-        if input_prediksi_bulanan:
-            pred_bulanan = model.predict([[
-                float(input_prediksi_bulanan["pakan_total_kg"]),
-                int(input_prediksi_bulanan["kematian"]),
-                int(input_prediksi_bulanan["afkir"])
-            ]])[0]
+        # ===========================
+        # Prediksi Bulanan (otomatis)
+        # ===========================
+        df_bulan = df.copy()
+        df_bulan["bulan"] = df_bulan["tanggal"].dt.to_period("M")
+        df_month = df_bulan.groupby("bulan").agg({
+            "pakan_total_kg": "sum",
+            "kematian": "sum",
+            "afkir": "sum",
+            "telur_kg": "sum"
+        }).reset_index()
+
+        # pakai bulan terakhir untuk prediksi bulan berikutnya
+        last_month = df_month.tail(1)[["pakan_total_kg", "kematian", "afkir"]]
+        pred_bulanan = model.predict(last_month)[0]
 
         return jsonify({
             "status": "success",
             "MAE": round(float(mae), 2),
             "RMSE": round(float(rmse), 2),
             "R2": round(float(r2), 2),
-            "prediksi_harian_telur_kg": round(float(pred_harian), 2) if pred_harian else None,
-            "prediksi_bulanan_telur_kg": round(float(pred_bulanan), 2) if pred_bulanan else None
+            "prediksi_harian_telur_kg": round(float(pred_harian), 2),
+            "prediksi_bulanan_telur_kg": round(float(pred_bulanan), 2)
         })
 
     except Exception as e:
