@@ -73,8 +73,8 @@ def predict():
         "prediksi_telur_kg": round(float(prediksi[0]), 2)
     })
 
-@app.route("/train", methods=["POST"])
-def train():
+@app.route("/traind", methods=["POST"])
+def traind():
     data = request.get_json()
 
     if not data:
