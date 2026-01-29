@@ -17,6 +17,8 @@ def train():
 
     dataset = data.get("dataset")
     training = data.get("training")
+    input_prediksi_harian = data.get("input_prediksi_harian")
+    input_prediksi_bulanan = data.get("input_prediksi_bulanan")
 
     if not dataset or not training:
         return jsonify({"status": "error", "message": "Dataset atau training parameter tidak lengkap"}), 400
@@ -65,11 +67,31 @@ def train():
         rmse = np.sqrt(mean_squared_error(y_test, pred))
         r2 = r2_score(y_test, pred)
 
+        # Prediksi harian berdasarkan input
+        pred_harian = None
+        if input_prediksi_harian:
+            pred_harian = model.predict([[
+                float(input_prediksi_harian["pakan_total_kg"]),
+                int(input_prediksi_harian["kematian"]),
+                int(input_prediksi_harian["afkir"])
+            ]])[0]
+
+        # Prediksi bulanan berdasarkan input (sum bulanan)
+        pred_bulanan = None
+        if input_prediksi_bulanan:
+            pred_bulanan = model.predict([[
+                float(input_prediksi_bulanan["pakan_total_kg"]),
+                int(input_prediksi_bulanan["kematian"]),
+                int(input_prediksi_bulanan["afkir"])
+            ]])[0]
+
         return jsonify({
             "status": "success",
             "MAE": round(float(mae), 2),
             "RMSE": round(float(rmse), 2),
-            "R2": round(float(r2), 2)
+            "R2": round(float(r2), 2),
+            "prediksi_harian_telur_kg": round(float(pred_harian), 2) if pred_harian else None,
+            "prediksi_bulanan_telur_kg": round(float(pred_bulanan), 2) if pred_bulanan else None
         })
 
     except Exception as e:
