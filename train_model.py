@@ -23,7 +23,6 @@ def train_model(dataset, training_params):
         "pakan_total_kg",
         "kematian",
         "afkir",
-        "id_kandang",
         "telur_kg"
     ]
 
@@ -46,7 +45,6 @@ def train_model(dataset, training_params):
         "pakan_per_ayam",
         "kematian",
         "afkir",
-        "id_kandang"
     ]]
 
     # =====================
