@@ -66,14 +66,18 @@ def train():
         df = df.dropna()
 
         # ===========================
-        # HITUNG BERAT RATA-RATA PER BUTIR
+        # HITUNG BERAT RATA-RATA PER BUTIR AMAN
         # ===========================
-        if "jumlah_telur_butir" in df.columns:
+        if "jumlah_telur_butir" in df.columns and df["jumlah_telur_butir"].sum() > 0:
             df["berat_per_butir"] = df["telur_kg"] / df["jumlah_telur_butir"]
+            avg_berat_per_butir = df["berat_per_butir"].mean()
         else:
-            df["berat_per_butir"] = df["telur_per_ayam"] / 1  # estimasi sederhana
-
-        avg_berat_per_butir = df["berat_per_butir"].mean()
+            # estimasi sederhana: ambil rata-rata telur per ayam
+            df["berat_per_butir"] = df["telur_per_ayam"].replace(0, np.nan)
+            if df["berat_per_butir"].isna().all():
+                avg_berat_per_butir = 0.06  # default asumsi 60 gr per butir
+            else:
+                avg_berat_per_butir = df["berat_per_butir"].mean()
 
         # ===========================
         # MODEL INPUT
@@ -115,9 +119,16 @@ def train():
         pred_per_ayam = model.predict(X_last)[0]
         pred_harian_kg = pred_per_ayam * float(last["ayam_aktif"])
 
-        # prediksi per butir
-        pred_harian_butir = pred_harian_kg / avg_berat_per_butir
-        pred_bulanan_butir = pred_harian_butir * 30
+        # ===========================
+        # PREDIKSI PER BUTIR AMAN
+        # ===========================
+        if avg_berat_per_butir > 0:
+            pred_harian_butir = pred_harian_kg / avg_berat_per_butir
+            pred_bulanan_butir = pred_harian_butir * 30
+        else:
+            pred_harian_butir = 0
+            pred_bulanan_butir = 0
+
         pred_bulanan_kg = pred_harian_kg * 30
 
         return jsonify({
