@@ -66,6 +66,16 @@ def train():
         df = df.dropna()
 
         # ===========================
+        # HITUNG BERAT RATA-RATA PER BUTIR
+        # ===========================
+        if "jumlah_telur_butir" in df.columns:
+            df["berat_per_butir"] = df["telur_kg"] / df["jumlah_telur_butir"]
+        else:
+            df["berat_per_butir"] = df["telur_per_ayam"] / 1  # estimasi sederhana
+
+        avg_berat_per_butir = df["berat_per_butir"].mean()
+
+        # ===========================
         # MODEL INPUT
         # ===========================
         X = df[[
@@ -92,7 +102,8 @@ def train():
         pred_test = model.predict(X_test)
 
         mae = mean_absolute_error(y_test, pred_test)
-        rmse = np.sqrt(mean_squared_error(y_test, pred_test))
+        mse = mean_squared_error(y_test, pred_test)
+        rmse = np.sqrt(mse)
         r2 = r2_score(y_test, pred_test)
 
         # ===========================
@@ -104,22 +115,25 @@ def train():
         pred_per_ayam = model.predict(X_last)[0]
         pred_harian_kg = pred_per_ayam * float(last["ayam_aktif"])
 
-        # ===========================
-        # PREDIKSI BULANAN (30 hari)
-        # ===========================
+        # prediksi per butir
+        pred_harian_butir = pred_harian_kg / avg_berat_per_butir
+        pred_bulanan_butir = pred_harian_butir * 30
         pred_bulanan_kg = pred_harian_kg * 30
 
         return jsonify({
             "status": "success",
             "akurasi": {
                 "MAE_per_ayam": round(float(mae), 4),
+                "MSE_per_ayam": round(float(mse), 4),
                 "RMSE_per_ayam": round(float(rmse), 4),
                 "R2": round(float(r2), 3)
             },
             "prediksi": {
                 "harian_telur_kg": round(float(pred_harian_kg), 2),
                 "bulanan_telur_kg": round(float(pred_bulanan_kg), 2),
-                "telur_per_ayam": round(float(pred_per_ayam), 4)
+                "telur_per_ayam": round(float(pred_per_ayam), 4),
+                "harian_telur_butir": round(float(pred_harian_butir), 0),
+                "bulanan_telur_butir": round(float(pred_bulanan_butir), 0)
             }
         })
 
@@ -129,7 +143,7 @@ def train():
 
 @app.route("/", methods=["GET"])
 def home():
-    return "🚀 API Prediksi Telur Presisi (Per Ayam Aktif)"
+    return "🚀 API Prediksi Telur Presisi (Per Ayam Aktif & Per Butir)"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), debug=True)
