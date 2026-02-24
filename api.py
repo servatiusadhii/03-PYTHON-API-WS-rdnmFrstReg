@@ -98,6 +98,63 @@ def train():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route("/predict-manual", methods=["POST"])
+def predict_manual():
+    data = request.get_json()
+    dataset_history = data.get("dataset") # Data dari query DB Laravel
+    
+    try:
+        # 1. Jalankan training/evaluasi pakai dataset history
+        # (Supaya metrik MAE, RMSE, R2 muncul sesuai performa history)
+        eval_result = train_model(dataset_history, data.get("training", {}))
+
+        # 2. Ambil data input manual dari Form Laravel
+        jml_ayam = float(data.get("jumlah_ayam"))
+        pakan_kg = float(data.get("pakan_total_kg"))
+        kematian = float(data.get("kematian", 0))
+        afkir = float(data.get("afkir", 0))
+
+        # 3. Load model untuk prediksi data baru
+        with open("model_telur.pkl", "rb") as f:
+            model = pickle.load(f)
+
+        pakan_per_ayam = pakan_kg / jml_ayam
+        X_input = [[jml_ayam, pakan_per_ayam, kematian, afkir]]
+        pred_kg = model.predict(X_input)[0]
+
+        # 4. Ambil rata-rata ayam di history untuk hitung metrik 'per_ayam'
+        df_hist = pd.DataFrame(dataset_history)
+        avg_ayam_hist = df_hist["jumlah_ayam"].mean()
+
+        # Metrik dasar
+        MAE = eval_result["MAE (kg)"]
+        RMSE = eval_result["RMSE (kg)"]
+        R2 = eval_result["R2"]
+
+        # OUTPUT IDENTIK DENGAN ENDPOINT /train
+        return jsonify({
+            "status": "success",
+            "MAE_kg": round(float(MAE), 3),
+            "MSE_kg": round(float(RMSE**2), 3),
+            "RMSE_kg": round(float(RMSE), 3),
+            "MAE_per_ayam": round(float(MAE / avg_ayam_hist), 6),
+            "MSE_per_ayam": round(float((RMSE**2) / (avg_ayam_hist**2)), 6),
+            "RMSE_per_ayam": round(float(RMSE / avg_ayam_hist), 6),
+            "R2": round(float(R2), 3),
+            "Train_rows": eval_result["Train_rows"],
+            "Test_rows": eval_result["Test_rows"],
+            "Features_used": eval_result["Features_used"],
+            "prediksi": {
+                "harian_telur_kg": round(float(pred_kg), 2),
+                "bulanan_telur_kg": round(float(pred_kg * 30), 2),
+                "telur_per_ayam": round(float(pred_kg / jml_ayam), 4),
+                "harian_telur_butir": int(round(pred_kg / 0.06)),
+                "bulanan_telur_butir": int(round((pred_kg * 30) / 0.06))
+            }
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 
 @app.route("/", methods=["GET"])
 def home():
