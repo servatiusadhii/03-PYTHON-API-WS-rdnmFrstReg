@@ -102,8 +102,19 @@ def train():
 # --- FUNGSI HELPER (Taruh di atas route predict_manual) ---
 def internal_train_manual(dataset, training_params):
     df = pd.DataFrame(dataset)
-    # Feature engineering
+    
+    # PAKSA semua kolom jadi numeric biar gak ada error 'str' / 'int'
+    cols_to_fix = ["jumlah_ayam", "pakan_total_kg", "kematian", "afkir", "telur_kg"]
+    for col in cols_to_fix:
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+    # Baru deh dihitung
     df["pakan_per_ayam"] = df["pakan_total_kg"] / df["jumlah_ayam"]
+    
+    # Ganti inf atau nan hasil pembagian dengan 0
+    df.replace([np.inf, -np.inf], 0, inplace=True)
+    df.fillna(0, inplace=True)
+
     X = df[["jumlah_ayam", "pakan_per_ayam", "kematian", "afkir"]]
     y = df["telur_kg"]
 
