@@ -99,37 +99,41 @@ def train():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# --- FUNGSI HELPER (Taruh di atas route predict_manual) ---
+# --- FUNGSI HELPER (DIPERBAIKI) ---
 def internal_train_manual(dataset, training_params):
     df = pd.DataFrame(dataset)
     
-    # PAKSA semua kolom jadi numeric biar gak ada error 'str' / 'int'
+    # Konversi ke numeric dan buang baris yang rusak
     cols_to_fix = ["jumlah_ayam", "pakan_total_kg", "kematian", "afkir", "telur_kg"]
     for col in cols_to_fix:
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    df.dropna(subset=cols_to_fix, inplace=True)
 
-    # Baru deh dihitung
+    # Feature Engineering: Penting biar hasil dinamis!
     df["pakan_per_ayam"] = df["pakan_total_kg"] / df["jumlah_ayam"]
     
-    # Ganti inf atau nan hasil pembagian dengan 0
+    # Hindari pembagian dengan nol
     df.replace([np.inf, -np.inf], 0, inplace=True)
     df.fillna(0, inplace=True)
 
     X = df[["jumlah_ayam", "pakan_per_ayam", "kematian", "afkir"]]
     y = df["telur_kg"]
 
-    n_estimators = int(training_params.get("n_estimators", 200))
+    # Parameter model dibuat lebih fleksibel biar gak "stuck" di angka rata-rata
+    n_estimators = int(training_params.get("n_estimators", 100))
     random_state = int(training_params.get("random_state", 42))
-    max_depth = training_params.get("max_depth")
-    if max_depth is not None: max_depth = int(max_depth)
+    
+    # Split data (sesuaikan test_size jika data dikit)
+    test_size = 0.2 if len(df) > 10 else 0.1
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=random_state)
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=random_state)
-
+    # Model Random Forest (Settingan dikurangi biar sensitif terhadap input manual)
     model = RandomForestRegressor(
         n_estimators=n_estimators,
-        max_depth=max_depth,
-        min_samples_leaf=5,
-        min_samples_split=10,
+        max_depth=None, # Biar model bisa belajar detail data
+        min_samples_leaf=1, # Biar lebih sensitif terhadap perubahan input
+        min_samples_split=2,
         random_state=random_state
     )
     model.fit(X_train, y_train)
@@ -150,7 +154,7 @@ def internal_train_manual(dataset, training_params):
         "features": list(X.columns)
     }
 
-# --- ROUTE PREDICT MANUAL ---
+# --- ROUTE PREDICT MANUAL (FIXED & REAL CALCULATION) ---
 @app.route("/predict-manual", methods=["POST"])
 def predict_manual():
     data = request.get_json()
@@ -158,10 +162,10 @@ def predict_manual():
         return jsonify({"status": "error", "message": "Dataset history kosong"}), 400
         
     try:
-        # 1. Training dulu pakai history
+        # 1. Training dulu pakai history yang dikirim Laravel
         res = internal_train_manual(data.get("dataset"), data.get("training", {}))
 
-        # 2. Ambil & validasi input manual
+        # 2. Ambil input manual dari Laravel
         jml_ayam = float(data.get("jumlah_ayam", 0))
         pakan_kg = float(data.get("pakan_total_kg", 0))
         kematian = float(data.get("kematian", 0))
@@ -170,39 +174,44 @@ def predict_manual():
         if jml_ayam <= 0:
             return jsonify({"status": "error", "message": "Jumlah ayam harus lebih dari 0"}), 400
 
-        # 3. Prediksi
+        # 3. Jalankan Prediksi
         pakan_per_ayam = pakan_kg / jml_ayam
-        X_input = [[jml_ayam, pakan_per_ayam, kematian, afkir]]
-        pred_kg = res["model"].predict(X_input)[0]
+        X_input = pd.DataFrame([[jml_ayam, pakan_per_ayam, kematian, afkir]], 
+                               columns=["jumlah_ayam", "pakan_per_ayam", "kematian", "afkir"])
+        
+        # Hasil Prediksi Harian dalam KG
+        pred_kg = float(res["model"].predict(X_input)[0])
 
-        # 4. Hitung metrik (Pake np.sqrt dengan aman)
+        # 4. Kalkulasi Metrik Tambahan
         rmse_val = float(np.sqrt(res["MSE"]))
-        avg_ayam = res["avg_ayam_hist"]
+        avg_ayam_hist = res["avg_ayam_hist"]
+
+        # Logika Bisnis: 1 butir telur rata-rata 62.5 gram (0.0625 kg)
+        # Atau lo bisa pake 0.06 kg (16 butir/kg)
+        konversi_butir = 0.0625 
 
         return jsonify({
             "status": "success",
             "MAE_kg": round(float(res["MAE"]), 3),
             "MSE_kg": round(float(res["MSE"]), 3),
             "RMSE_kg": round(rmse_val, 3),
-            "MAE_per_ayam": round(float(res["MAE"] / avg_ayam), 6),
-            "MSE_per_ayam": round(float(res["MSE"] / (avg_ayam**2)), 6),
-            "RMSE_per_ayam": round(float(rmse_val / avg_ayam), 6),
+            "MAE_per_ayam": round(float(res["MAE"] / avg_ayam_hist), 6),
+            "MSE_per_ayam": round(float(res["MSE"] / (avg_ayam_hist**2)), 6),
+            "RMSE_per_ayam": round(float(rmse_val / avg_ayam_hist), 6),
             "R2": round(float(res["R2"]), 3),
             "Train_rows": res["train_rows"],
             "Test_rows": res["test_rows"],
-            "Features_used": res["features"],
             "prediksi": {
-                "harian_telur_kg": round(float(pred_kg), 2),
-                "bulanan_telur_kg": round(float(pred_kg * 30), 2),
-                "telur_per_ayam": round(float(pred_kg / jml_ayam), 4),
-                "harian_telur_butir": int(round(pred_kg / 0.06)),
-                "bulanan_telur_butir": int(round((pred_kg * 30) / 0.06))
+                "harian_telur_kg": round(pred_kg, 2),
+                "bulanan_telur_kg": round(pred_kg * 30, 2),
+                "telur_per_ayam": round(pred_kg / jml_ayam, 4),
+                "harian_telur_butir": int(round(pred_kg / konversi_butir)),
+                "bulanan_telur_butir": int(round((pred_kg * 30) / konversi_butir))
             }
         })
     except Exception as e:
-        # Biar lo tau error aslinya apa di log Laravel
         return jsonify({"status": "error", "message": f"Python Error: {str(e)}"}), 500
-
+        
 @app.route("/", methods=["GET"])
 def home():
     return "🚀 API Training Model Produksi Telur (ANTI DATA BOCOR)"
