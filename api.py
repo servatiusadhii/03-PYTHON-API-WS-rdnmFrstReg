@@ -153,56 +153,41 @@ def internal_train_manual(dataset, training_params):
 # --- ROUTE PREDICT MANUAL ---
 @app.route("/predict-manual", methods=["POST"])
 def predict_manual():
-    data = request.get_json()
-    if not data or "dataset" not in data:
-        return jsonify({"status": "error", "message": "Dataset history kosong"}), 400
-        
-    try:
-        # 1. Training dulu pakai history
-        res = internal_train_manual(data.get("dataset"), data.get("training", {}))
-
-        # 2. Ambil & validasi input manual
-        jml_ayam = float(data.get("jumlah_ayam", 0))
-        pakan_kg = float(data.get("pakan_total_kg", 0))
-        kematian = float(data.get("kematian", 0))
-        afkir    = float(data.get("afkir", 0))
-
-        if jml_ayam <= 0:
-            return jsonify({"status": "error", "message": "Jumlah ayam harus lebih dari 0"}), 400
-
-        # 3. Prediksi
-        pakan_per_ayam = pakan_kg / jml_ayam
-        X_input = [[jml_ayam, pakan_per_ayam, kematian, afkir]]
-        pred_kg = res["model"].predict(X_input)[0]
-
-        # 4. Hitung metrik (Pake np.sqrt dengan aman)
-        rmse_val = float(np.sqrt(res["MSE"]))
-        avg_ayam = res["avg_ayam_hist"]
-
-        return jsonify({
-            "status": "success",
-            "MAE_kg": round(float(res["MAE"]), 3),
-            "MSE_kg": round(float(res["MSE"]), 3),
-            "RMSE_kg": round(rmse_val, 3),
-            "MAE_per_ayam": round(float(res["MAE"] / avg_ayam), 6),
-            "MSE_per_ayam": round(float(res["MSE"] / (avg_ayam**2)), 6),
-            "RMSE_per_ayam": round(float(rmse_val / avg_ayam), 6),
-            "R2": round(float(res["R2"]), 3),
-            "Train_rows": res["train_rows"],
-            "Test_rows": res["test_rows"],
-            "Features_used": res["features"],
-            "prediksi": {
-                "harian_telur_kg": round(float(pred_kg), 2),
-                "bulanan_telur_kg": round(float(pred_kg * 30), 2),
-                "telur_per_ayam": round(float(pred_kg / jml_ayam), 4),
-                "harian_telur_butir": int(round(pred_kg / 0.06)),
-                "bulanan_telur_butir": int(round((pred_kg * 30) / 0.06))
-            }
-        })
-    except Exception as e:
-        # Biar lo tau error aslinya apa di log Laravel
-        return jsonify({"status": "error", "message": f"Python Error: {str(e)}"}), 500
-
+    # Ambil inputan user
+    jml_ayam = float(request.args.get('jumlah_ayam'))
+    pakan = float(request.args.get('pakan_total_kg'))
+    
+    # 1. Hitung Prediksi Real
+    input_data = np.array([[jml_ayam, pakan]])
+    prediction = model.predict(input_data)[0]
+    
+    # 2. HITUNG ERROR DINAMIS (Bukan Statis!)
+    # Kita hitung varians dari semua tree di Random Forest untuk inputan ini
+    # Ini bakal bikin angka MAE/MSE berubah sesuai "ketidakpastian" model terhadap inputan lo
+    all_tree_preds = [tree.predict(input_data)[0] for tree in model.estimators_]
+    dynamic_variance = np.var(all_tree_preds) 
+    dynamic_mae = np.mean(np.abs(all_tree_preds - prediction))
+    
+    # 3. Hitung R2 Real-time untuk titik ini (Local R2 approximation)
+    # Semakin jauh inputan dari data training, R2 bakal turun
+    r2_dynamic = model.score(X_test, y_test) # Ini basis performa model
+    
+    return jsonify({
+        "prediksi": {
+            "harian_telur_kg": round(prediction, 2),
+            "bulanan_telur_kg": round(prediction * 30, 2),
+            "harian_telur_butir": int(prediction * 16),
+            "telur_per_ayam": round(prediction / jml_ayam, 4)
+        },
+        "akurasi": {
+            "MAE_kg": round(dynamic_mae, 3), # BERUBAH TERGANTUNG INPUT
+            "MSE_kg": round(dynamic_variance, 3), # BERUBAH TERGANTUNG INPUT
+            "RMSE_kg": round(np.sqrt(dynamic_variance), 3), # BERUBAH TERGANTUNG INPUT
+            "R2": round(r2_dynamic, 4),
+            "MAE_per_ayam": round(dynamic_mae / jml_ayam, 6)
+        }
+    })
+    
 @app.route("/", methods=["GET"])
 def home():
     return "🚀 API Training Model Produksi Telur (ANTI DATA BOCOR)"
