@@ -99,95 +99,118 @@ def train():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# --- FUNGSI HELPER (Taruh di atas route predict_manual) ---
+# Variabel Global biar bisa diakses route
+model_global = None
+metrics_global = {}
+
+# --- FUNGSI HELPER ---
 def internal_train_manual(dataset, training_params):
     df = pd.DataFrame(dataset)
     
-    # PAKSA semua kolom jadi numeric biar gak ada error 'str' / 'int'
     cols_to_fix = ["jumlah_ayam", "pakan_total_kg", "kematian", "afkir", "telur_kg"]
     for col in cols_to_fix:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    # Baru deh dihitung
+    # Fitur Engineering: Harus sama antara training dan prediction
     df["pakan_per_ayam"] = df["pakan_total_kg"] / df["jumlah_ayam"]
-    
-    # Ganti inf atau nan hasil pembagian dengan 0
     df.replace([np.inf, -np.inf], 0, inplace=True)
     df.fillna(0, inplace=True)
 
-    X = df[["jumlah_ayam", "pakan_per_ayam", "kematian", "afkir"]]
+    # Fitur yang digunakan
+    features = ["jumlah_ayam", "pakan_per_ayam", "kematian", "afkir"]
+    X = df[features]
     y = df["telur_kg"]
 
     n_estimators = int(training_params.get("n_estimators", 200))
     random_state = int(training_params.get("random_state", 42))
-    max_depth = training_params.get("max_depth")
-    if max_depth is not None: max_depth = int(max_depth)
-
+    
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=random_state)
 
     model = RandomForestRegressor(
         n_estimators=n_estimators,
-        max_depth=max_depth,
         min_samples_leaf=5,
-        min_samples_split=10,
         random_state=random_state
     )
     model.fit(X_train, y_train)
     
     y_pred = model.predict(X_test)
-    MAE = mean_absolute_error(y_test, y_pred)
-    MSE = mean_squared_error(y_test, y_pred)
-    R2 = r2_score(y_test, y_pred)
-
+    
     return {
         "model": model,
-        "MAE": MAE,
-        "MSE": MSE,
-        "R2": R2,
-        "train_rows": len(X_train),
-        "test_rows": len(X_test),
-        "avg_ayam_hist": df["jumlah_ayam"].mean(),
-        "features": list(X.columns)
+        "MAE": mean_absolute_error(y_test, y_pred),
+        "MSE": mean_squared_error(y_test, y_pred),
+        "R2": r2_score(y_test, y_pred),
+        "X_test": X_test, # Disimpan buat hitung skor real-time
+        "y_test": y_test
     }
 
 # --- ROUTE PREDICT MANUAL ---
 @app.route("/predict-manual", methods=["POST"])
 def predict_manual():
-    # Ambil inputan user
-    jml_ayam = float(request.args.get('jumlah_ayam'))
-    pakan = float(request.args.get('pakan_total_kg'))
+    global model_global, metrics_global
     
-    # 1. Hitung Prediksi Real
-    input_data = np.array([[jml_ayam, pakan]])
-    prediction = model.predict(input_data)[0]
-    
-    # 2. HITUNG ERROR DINAMIS (Bukan Statis!)
-    # Kita hitung varians dari semua tree di Random Forest untuk inputan ini
-    # Ini bakal bikin angka MAE/MSE berubah sesuai "ketidakpastian" model terhadap inputan lo
-    all_tree_preds = [tree.predict(input_data)[0] for tree in model.estimators_]
-    dynamic_variance = np.var(all_tree_preds) 
-    dynamic_mae = np.mean(np.abs(all_tree_preds - prediction))
-    
-    # 3. Hitung R2 Real-time untuk titik ini (Local R2 approximation)
-    # Semakin jauh inputan dari data training, R2 bakal turun
-    r2_dynamic = model.score(X_test, y_test) # Ini basis performa model
-    
-    return jsonify({
-        "prediksi": {
-            "harian_telur_kg": round(prediction, 2),
-            "bulanan_telur_kg": round(prediction * 30, 2),
-            "harian_telur_butir": int(prediction * 16),
-            "telur_per_ayam": round(prediction / jml_ayam, 4)
-        },
-        "akurasi": {
-            "MAE_kg": round(dynamic_mae, 3), # BERUBAH TERGANTUNG INPUT
-            "MSE_kg": round(dynamic_variance, 3), # BERUBAH TERGANTUNG INPUT
-            "RMSE_kg": round(np.sqrt(dynamic_variance), 3), # BERUBAH TERGANTUNG INPUT
-            "R2": round(r2_dynamic, 4),
-            "MAE_per_ayam": round(dynamic_mae / jml_ayam, 6)
-        }
-    })
-    
+    # Ambil data dari JSON Body (karena POST)
+    data = request.get_json()
+    if not data:
+        return jsonify({"status": "error", "message": "No data body"}), 400
+
+    try:
+        # 1. Ambil & Validasi Input
+        jml_ayam = float(data.get('jumlah_ayam', 0))
+        pakan_total = float(data.get('pakan_total_kg', 0))
+        kematian = float(data.get('kematian', 0))
+        afkir = float(data.get('afkir', 0))
+
+        if jml_ayam <= 0:
+            return jsonify({"status": "error", "message": "Jumlah ayam harus > 0"}), 400
+
+        # Hitung fitur tambahan (pakan_per_ayam) agar sinkron dengan model
+        pakan_per_ayam = pakan_total / jml_ayam
+        
+        # Susun array fitur (JUMLAH HARUS 4: ayam, pakan_per_ayam, kematian, afkir)
+        input_array = np.array([[jml_ayam, pakan_per_ayam, kematian, afkir]])
+
+        # 2. Cek apakah model sudah di-train
+        if model_global is None:
+            return jsonify({"status": "error", "message": "Model belum dilatih. Klik Tampilkan Data dulu!"}), 400
+
+        # 3. Hitung Prediksi
+        prediction = model_global.predict(input_array)[0]
+        
+        # 4. HITUNG ERROR DINAMIS (REAL berdasarkan variansi Tree)
+        # Ambil prediksi dari tiap tree untuk melihat ketidakpastian
+        all_tree_preds = [tree.predict(input_array)[0] for tree in model_global.estimators_]
+        
+        # MSE dinamis = variansi antar tree
+        dynamic_mse = np.var(all_tree_preds) 
+        # MAE dinamis = rata-rata selisih absolut dari rata-rata prediksi
+        dynamic_mae = np.mean(np.abs(all_tree_preds - prediction))
+        
+        # R2 dinamis (bisa diambil dari performa test set terakhir)
+        r2_base = metrics_global.get('R2', 0)
+
+        return jsonify({
+            "status": "success",
+            "prediksi": {
+                "harian_telur_kg": round(prediction, 2),
+                "bulanan_telur_kg": round(prediction * 30, 2),
+                "harian_telur_butir": int(prediction * 16),
+                "telur_per_ayam": round(prediction / jml_ayam, 4)
+            },
+            "akurasi": {
+                "MAE_kg": round(dynamic_mae, 3),
+                "MSE_kg": round(dynamic_mse, 3),
+                "RMSE_kg": round(np.sqrt(dynamic_mse), 3),
+                "R2": round(r2_base, 4),
+                "MAE_per_ayam": round(dynamic_mae / jml_ayam, 6),
+                "MSE_per_ayam": round(dynamic_mse / jml_ayam, 6),
+                "RMSE_per_ayam": round(np.sqrt(dynamic_mse) / jml_ayam, 6)
+            }
+        })
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route("/", methods=["GET"])
 def home():
     return "🚀 API Training Model Produksi Telur (ANTI DATA BOCOR)"
