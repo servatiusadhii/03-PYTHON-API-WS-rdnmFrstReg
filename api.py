@@ -99,117 +99,109 @@ def train():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# Variabel Global biar bisa diakses route
-model_global = None
-metrics_global = {}
-
-# --- FUNGSI HELPER ---
+# --- FUNGSI HELPER (Taruh di atas route predict_manual) ---
 def internal_train_manual(dataset, training_params):
     df = pd.DataFrame(dataset)
     
+    # PAKSA semua kolom jadi numeric biar gak ada error 'str' / 'int'
     cols_to_fix = ["jumlah_ayam", "pakan_total_kg", "kematian", "afkir", "telur_kg"]
     for col in cols_to_fix:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    # Fitur Engineering: Harus sama antara training dan prediction
+    # Baru deh dihitung
     df["pakan_per_ayam"] = df["pakan_total_kg"] / df["jumlah_ayam"]
+    
+    # Ganti inf atau nan hasil pembagian dengan 0
     df.replace([np.inf, -np.inf], 0, inplace=True)
     df.fillna(0, inplace=True)
 
-    # Fitur yang digunakan
-    features = ["jumlah_ayam", "pakan_per_ayam", "kematian", "afkir"]
-    X = df[features]
+    X = df[["jumlah_ayam", "pakan_per_ayam", "kematian", "afkir"]]
     y = df["telur_kg"]
 
     n_estimators = int(training_params.get("n_estimators", 200))
     random_state = int(training_params.get("random_state", 42))
-    
+    max_depth = training_params.get("max_depth")
+    if max_depth is not None: max_depth = int(max_depth)
+
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=random_state)
 
     model = RandomForestRegressor(
         n_estimators=n_estimators,
+        max_depth=max_depth,
         min_samples_leaf=5,
+        min_samples_split=10,
         random_state=random_state
     )
     model.fit(X_train, y_train)
     
     y_pred = model.predict(X_test)
-    
+    MAE = mean_absolute_error(y_test, y_pred)
+    MSE = mean_squared_error(y_test, y_pred)
+    R2 = r2_score(y_test, y_pred)
+
     return {
         "model": model,
-        "MAE": mean_absolute_error(y_test, y_pred),
-        "MSE": mean_squared_error(y_test, y_pred),
-        "R2": r2_score(y_test, y_pred),
-        "X_test": X_test, # Disimpan buat hitung skor real-time
-        "y_test": y_test
+        "MAE": MAE,
+        "MSE": MSE,
+        "R2": R2,
+        "train_rows": len(X_train),
+        "test_rows": len(X_test),
+        "avg_ayam_hist": df["jumlah_ayam"].mean(),
+        "features": list(X.columns)
     }
 
 # --- ROUTE PREDICT MANUAL ---
 @app.route("/predict-manual", methods=["POST"])
 def predict_manual():
-    global model_global, metrics_global
-    
-    # Ambil data dari JSON Body (karena POST)
     data = request.get_json()
-    if not data:
-        return jsonify({"status": "error", "message": "No data body"}), 400
-
+    if not data or "dataset" not in data:
+        return jsonify({"status": "error", "message": "Dataset history kosong"}), 400
+        
     try:
-        # 1. Ambil & Validasi Input
-        jml_ayam = float(data.get('jumlah_ayam', 0))
-        pakan_total = float(data.get('pakan_total_kg', 0))
-        kematian = float(data.get('kematian', 0))
-        afkir = float(data.get('afkir', 0))
+        # 1. Training dulu pakai history
+        res = internal_train_manual(data.get("dataset"), data.get("training", {}))
+
+        # 2. Ambil & validasi input manual
+        jml_ayam = float(data.get("jumlah_ayam", 0))
+        pakan_kg = float(data.get("pakan_total_kg", 0))
+        kematian = float(data.get("kematian", 0))
+        afkir    = float(data.get("afkir", 0))
 
         if jml_ayam <= 0:
-            return jsonify({"status": "error", "message": "Jumlah ayam harus > 0"}), 400
+            return jsonify({"status": "error", "message": "Jumlah ayam harus lebih dari 0"}), 400
 
-        # Hitung fitur tambahan (pakan_per_ayam) agar sinkron dengan model
-        pakan_per_ayam = pakan_total / jml_ayam
-        
-        # Susun array fitur (JUMLAH HARUS 4: ayam, pakan_per_ayam, kematian, afkir)
-        input_array = np.array([[jml_ayam, pakan_per_ayam, kematian, afkir]])
+        # 3. Prediksi
+        pakan_per_ayam = pakan_kg / jml_ayam
+        X_input = [[jml_ayam, pakan_per_ayam, kematian, afkir]]
+        pred_kg = res["model"].predict(X_input)[0]
 
-        # 2. Cek apakah model sudah di-train
-        if model_global is None:
-            return jsonify({"status": "error", "message": "Model belum dilatih. Klik Tampilkan Data dulu!"}), 400
-
-        # 3. Hitung Prediksi
-        prediction = model_global.predict(input_array)[0]
-        
-        # 4. HITUNG ERROR DINAMIS (REAL berdasarkan variansi Tree)
-        # Ambil prediksi dari tiap tree untuk melihat ketidakpastian
-        all_tree_preds = [tree.predict(input_array)[0] for tree in model_global.estimators_]
-        
-        # MSE dinamis = variansi antar tree
-        dynamic_mse = np.var(all_tree_preds) 
-        # MAE dinamis = rata-rata selisih absolut dari rata-rata prediksi
-        dynamic_mae = np.mean(np.abs(all_tree_preds - prediction))
-        
-        # R2 dinamis (bisa diambil dari performa test set terakhir)
-        r2_base = metrics_global.get('R2', 0)
+        # 4. Hitung metrik (Pake np.sqrt dengan aman)
+        rmse_val = float(np.sqrt(res["MSE"]))
+        avg_ayam = res["avg_ayam_hist"]
 
         return jsonify({
             "status": "success",
+            "MAE_kg": round(float(res["MAE"]), 3),
+            "MSE_kg": round(float(res["MSE"]), 3),
+            "RMSE_kg": round(rmse_val, 3),
+            "MAE_per_ayam": round(float(res["MAE"] / avg_ayam), 6),
+            "MSE_per_ayam": round(float(res["MSE"] / (avg_ayam**2)), 6),
+            "RMSE_per_ayam": round(float(rmse_val / avg_ayam), 6),
+            "R2": round(float(res["R2"]), 3),
+            "Train_rows": res["train_rows"],
+            "Test_rows": res["test_rows"],
+            "Features_used": res["features"],
             "prediksi": {
-                "harian_telur_kg": round(prediction, 2),
-                "bulanan_telur_kg": round(prediction * 30, 2),
-                "harian_telur_butir": int(prediction * 16),
-                "telur_per_ayam": round(prediction / jml_ayam, 4)
-            },
-            "akurasi": {
-                "MAE_kg": round(dynamic_mae, 3),
-                "MSE_kg": round(dynamic_mse, 3),
-                "RMSE_kg": round(np.sqrt(dynamic_mse), 3),
-                "R2": round(r2_base, 4),
-                "MAE_per_ayam": round(dynamic_mae / jml_ayam, 6),
-                "MSE_per_ayam": round(dynamic_mse / jml_ayam, 6),
-                "RMSE_per_ayam": round(np.sqrt(dynamic_mse) / jml_ayam, 6)
+                "harian_telur_kg": round(float(pred_kg), 2),
+                "bulanan_telur_kg": round(float(pred_kg * 30), 2),
+                "telur_per_ayam": round(float(pred_kg / jml_ayam), 4),
+                "harian_telur_butir": int(round(pred_kg / 0.06)),
+                "bulanan_telur_butir": int(round((pred_kg * 30) / 0.06))
             }
         })
-
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        # Biar lo tau error aslinya apa di log Laravel
+        return jsonify({"status": "error", "message": f"Python Error: {str(e)}"}), 500
 
 @app.route("/", methods=["GET"])
 def home():
