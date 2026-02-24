@@ -8,6 +8,45 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 app = Flask(__name__)
 
+def internal_train_manual(dataset, training_params):
+    df = pd.DataFrame(dataset)
+    # Feature engineering
+    df["pakan_per_ayam"] = df["pakan_total_kg"] / df["jumlah_ayam"]
+    X = df[["jumlah_ayam", "pakan_per_ayam", "kematian", "afkir"]]
+    y = df["telur_kg"]
+
+    n_estimators = int(training_params.get("n_estimators", 200))
+    random_state = int(training_params.get("random_state", 42))
+    max_depth = training_params.get("max_depth")
+    if max_depth is not None: max_depth = int(max_depth)
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=random_state)
+
+    model = RandomForestRegressor(
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        min_samples_leaf=5,
+        min_samples_split=10,
+        random_state=random_state
+    )
+    model.fit(X_train, y_train)
+    
+    y_pred = model.predict(X_test)
+    MAE = mean_absolute_error(y_test, y_pred)
+    MSE = mean_squared_error(y_test, y_pred)
+    R2 = r2_score(y_test, y_pred)
+
+    return {
+        "model": model,
+        "MAE": MAE,
+        "MSE": MSE,
+        "R2": R2,
+        "train_rows": len(X_train),
+        "test_rows": len(X_test),
+        "avg_ayam_hist": df["jumlah_ayam"].mean(),
+        "features": list(X.columns)
+    }
+
 @app.route("/train", methods=["POST"])
 def train():
     data = request.get_json()
@@ -101,49 +140,39 @@ def train():
 @app.route("/predict-manual", methods=["POST"])
 def predict_manual():
     data = request.get_json()
-    dataset_history = data.get("dataset") # Data dari query DB Laravel
+    if not data:
+        return jsonify({"status": "error", "message": "JSON Body kosong"}), 400
+        
+    dataset_history = data.get("dataset")
     
     try:
-        # 1. Jalankan training/evaluasi pakai dataset history
-        # (Supaya metrik MAE, RMSE, R2 muncul sesuai performa history)
-        eval_result = train_model(dataset_history, data.get("training", {}))
+        # 1. Jalankan training pakai helper tadi
+        res = internal_train_manual(dataset_history, data.get("training", {}))
 
-        # 2. Ambil data input manual dari Form Laravel
+        # 2. Ambil data input manual
         jml_ayam = float(data.get("jumlah_ayam"))
         pakan_kg = float(data.get("pakan_total_kg"))
         kematian = float(data.get("kematian", 0))
         afkir = float(data.get("afkir", 0))
 
-        # 3. Load model untuk prediksi data baru
-        with open("model_telur.pkl", "rb") as f:
-            model = pickle.load(f)
-
+        # 3. Prediksi
         pakan_per_ayam = pakan_kg / jml_ayam
         X_input = [[jml_ayam, pakan_per_ayam, kematian, afkir]]
-        pred_kg = model.predict(X_input)[0]
+        pred_kg = res["model"].predict(X_input)[0]
 
-        # 4. Ambil rata-rata ayam di history untuk hitung metrik 'per_ayam'
-        df_hist = pd.DataFrame(dataset_history)
-        avg_ayam_hist = df_hist["jumlah_ayam"].mean()
-
-        # Metrik dasar
-        MAE = eval_result["MAE (kg)"]
-        RMSE = eval_result["RMSE (kg)"]
-        R2 = eval_result["R2"]
-
-        # OUTPUT IDENTIK DENGAN ENDPOINT /train
+        # 4. Response IDENTIK dengan /train
         return jsonify({
             "status": "success",
-            "MAE_kg": round(float(MAE), 3),
-            "MSE_kg": round(float(RMSE**2), 3),
-            "RMSE_kg": round(float(RMSE), 3),
-            "MAE_per_ayam": round(float(MAE / avg_ayam_hist), 6),
-            "MSE_per_ayam": round(float((RMSE**2) / (avg_ayam_hist**2)), 6),
-            "RMSE_per_ayam": round(float(RMSE / avg_ayam_hist), 6),
-            "R2": round(float(R2), 3),
-            "Train_rows": eval_result["Train_rows"],
-            "Test_rows": eval_result["Test_rows"],
-            "Features_used": eval_result["Features_used"],
+            "MAE_kg": round(float(res["MAE"]), 3),
+            "MSE_kg": round(float(res["MSE"]), 3),
+            "RMSE_kg": round(float(np.sqrt(res["MSE"])), 3),
+            "MAE_per_ayam": round(float(res["MAE"] / res["avg_ayam_hist"]), 6),
+            "MSE_per_ayam": round(float(res["MSE"] / (res["avg_ayam_hist"]**2)), 6),
+            "RMSE_per_ayam": round(float(np.sqrt(res["MSE"]) / res["avg_ayam_hist"]), 6),
+            "R2": round(float(res["R2"]), 3),
+            "Train_rows": res["train_rows"],
+            "Test_rows": res["test_rows"],
+            "Features_used": res["features"],
             "prediksi": {
                 "harian_telur_kg": round(float(pred_kg), 2),
                 "bulanan_telur_kg": round(float(pred_kg * 30), 2),
@@ -154,7 +183,6 @@ def predict_manual():
         })
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
-
 
 @app.route("/", methods=["GET"])
 def home():
