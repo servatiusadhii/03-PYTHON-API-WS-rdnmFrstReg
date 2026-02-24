@@ -8,44 +8,6 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 app = Flask(__name__)
 
-def internal_train_manual(dataset, training_params):
-    df = pd.DataFrame(dataset)
-    # Feature engineering
-    df["pakan_per_ayam"] = df["pakan_total_kg"] / df["jumlah_ayam"]
-    X = df[["jumlah_ayam", "pakan_per_ayam", "kematian", "afkir"]]
-    y = df["telur_kg"]
-
-    n_estimators = int(training_params.get("n_estimators", 200))
-    random_state = int(training_params.get("random_state", 42))
-    max_depth = training_params.get("max_depth")
-    if max_depth is not None: max_depth = int(max_depth)
-
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=random_state)
-
-    model = RandomForestRegressor(
-        n_estimators=n_estimators,
-        max_depth=max_depth,
-        min_samples_leaf=5,
-        min_samples_split=10,
-        random_state=random_state
-    )
-    model.fit(X_train, y_train)
-    
-    y_pred = model.predict(X_test)
-    MAE = mean_absolute_error(y_test, y_pred)
-    MSE = mean_squared_error(y_test, y_pred)
-    R2 = r2_score(y_test, y_pred)
-
-    return {
-        "model": model,
-        "MAE": MAE,
-        "MSE": MSE,
-        "R2": R2,
-        "train_rows": len(X_train),
-        "test_rows": len(X_test),
-        "avg_ayam_hist": df["jumlah_ayam"].mean(),
-        "features": list(X.columns)
-    }
 
 @app.route("/train", methods=["POST"])
 def train():
@@ -137,38 +99,83 @@ def train():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+# --- FUNGSI HELPER (Taruh di atas route predict_manual) ---
+def internal_train_manual(dataset, training_params):
+    df = pd.DataFrame(dataset)
+    # Feature engineering
+    df["pakan_per_ayam"] = df["pakan_total_kg"] / df["jumlah_ayam"]
+    X = df[["jumlah_ayam", "pakan_per_ayam", "kematian", "afkir"]]
+    y = df["telur_kg"]
+
+    n_estimators = int(training_params.get("n_estimators", 200))
+    random_state = int(training_params.get("random_state", 42))
+    max_depth = training_params.get("max_depth")
+    if max_depth is not None: max_depth = int(max_depth)
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=random_state)
+
+    model = RandomForestRegressor(
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        min_samples_leaf=5,
+        min_samples_split=10,
+        random_state=random_state
+    )
+    model.fit(X_train, y_train)
+    
+    y_pred = model.predict(X_test)
+    MAE = mean_absolute_error(y_test, y_pred)
+    MSE = mean_squared_error(y_test, y_pred)
+    R2 = r2_score(y_test, y_pred)
+
+    return {
+        "model": model,
+        "MAE": MAE,
+        "MSE": MSE,
+        "R2": R2,
+        "train_rows": len(X_train),
+        "test_rows": len(X_test),
+        "avg_ayam_hist": df["jumlah_ayam"].mean(),
+        "features": list(X.columns)
+    }
+
+# --- ROUTE PREDICT MANUAL ---
 @app.route("/predict-manual", methods=["POST"])
 def predict_manual():
     data = request.get_json()
-    if not data:
-        return jsonify({"status": "error", "message": "JSON Body kosong"}), 400
+    if not data or "dataset" not in data:
+        return jsonify({"status": "error", "message": "Dataset history kosong"}), 400
         
-    dataset_history = data.get("dataset")
-    
     try:
-        # 1. Jalankan training pakai helper tadi
-        res = internal_train_manual(dataset_history, data.get("training", {}))
+        # 1. Training dulu pakai history
+        res = internal_train_manual(data.get("dataset"), data.get("training", {}))
 
-        # 2. Ambil data input manual
-        jml_ayam = float(data.get("jumlah_ayam"))
-        pakan_kg = float(data.get("pakan_total_kg"))
+        # 2. Ambil & validasi input manual
+        jml_ayam = float(data.get("jumlah_ayam", 0))
+        pakan_kg = float(data.get("pakan_total_kg", 0))
         kematian = float(data.get("kematian", 0))
-        afkir = float(data.get("afkir", 0))
+        afkir    = float(data.get("afkir", 0))
+
+        if jml_ayam <= 0:
+            return jsonify({"status": "error", "message": "Jumlah ayam harus lebih dari 0"}), 400
 
         # 3. Prediksi
         pakan_per_ayam = pakan_kg / jml_ayam
         X_input = [[jml_ayam, pakan_per_ayam, kematian, afkir]]
         pred_kg = res["model"].predict(X_input)[0]
 
-        # 4. Response IDENTIK dengan /train
+        # 4. Hitung metrik (Pake np.sqrt dengan aman)
+        rmse_val = float(np.sqrt(res["MSE"]))
+        avg_ayam = res["avg_ayam_hist"]
+
         return jsonify({
             "status": "success",
             "MAE_kg": round(float(res["MAE"]), 3),
             "MSE_kg": round(float(res["MSE"]), 3),
-            "RMSE_kg": round(float(np.sqrt(res["MSE"])), 3),
-            "MAE_per_ayam": round(float(res["MAE"] / res["avg_ayam_hist"]), 6),
-            "MSE_per_ayam": round(float(res["MSE"] / (res["avg_ayam_hist"]**2)), 6),
-            "RMSE_per_ayam": round(float(np.sqrt(res["MSE"]) / res["avg_ayam_hist"]), 6),
+            "RMSE_kg": round(rmse_val, 3),
+            "MAE_per_ayam": round(float(res["MAE"] / avg_ayam), 6),
+            "MSE_per_ayam": round(float(res["MSE"] / (avg_ayam**2)), 6),
+            "RMSE_per_ayam": round(float(rmse_val / avg_ayam), 6),
             "R2": round(float(res["R2"]), 3),
             "Train_rows": res["train_rows"],
             "Test_rows": res["test_rows"],
@@ -182,7 +189,8 @@ def predict_manual():
             }
         })
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        # Biar lo tau error aslinya apa di log Laravel
+        return jsonify({"status": "error", "message": f"Python Error: {str(e)}"}), 500
 
 @app.route("/", methods=["GET"])
 def home():
