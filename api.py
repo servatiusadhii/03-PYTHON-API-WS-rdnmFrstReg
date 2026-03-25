@@ -235,11 +235,9 @@ def predict_manual():
         # 5. Response Final
         return jsonify({
             "status": "success",
-            "metrik": {
                 "MAE": round(float(MAE), 4),
                 "R2": round(float(R2), 4),
-                "train_rows": len(X_train)
-            },
+                "train_rows": len(X_train),
             "prediksi": {
                 "harian_telur_kg": round(pred_kg, 2),
                 "bulanan_telur_kg": round(pred_kg * 30, 2),
