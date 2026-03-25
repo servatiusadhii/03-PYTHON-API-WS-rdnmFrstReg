@@ -165,76 +165,93 @@ def predict_manual():
             
         df = pd.DataFrame(dataset)
         
-        # 1. Konversi Data & Bersihkan
-        for col in ["jumlah_ayam", "pakan_total_kg", "kematian", "afkir", "telur_kg"]:
+        # 1. Konversi Data & Bersihkan sesuai input baru
+        # Input: umur_ayam, jumlah_ayam, pakan_total_kg, kematian, persentase_bertelur
+        # Target di dataset biasanya telur_kg (kita hitung dari input historis jika perlu)
+        cols_required = ["umur_ayam", "jumlah_ayam", "pakan_total_kg", "kematian", "persentase_bertelur"]
+        
+        for col in cols_required:
             df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # Karena target prediksi kita adalah telur_kg, kita buat kolom target di df
+        # Rumus: (jumlah_ayam * persentase_bertelur / 100) * 0.062 (asumsi berat telur 62g)
+        if "telur_kg" not in df.columns:
+            df["telur_kg"] = (df["jumlah_ayam"] * (df["persentase_bertelur"] / 100)) * 0.062
+            
         df.dropna(inplace=True)
 
-        # 2. Hitung Metrik Evaluasi Real dari History (X_train, X_test)
-        # Kita pakai Linear Regression karena lebih stabil untuk dataset kecil & dinamis
+        # 2. Feature Engineering
         df["pakan_per_ayam"] = df["pakan_total_kg"] / df["jumlah_ayam"]
-        X = df[["jumlah_ayam", "pakan_per_ayam", "kematian", "afkir"]]
+        
+        # X sekarang menggunakan fitur yang dikirim dari Laravel
+        features = ["umur_ayam", "jumlah_ayam", "pakan_per_ayam", "kematian", "persentase_bertelur"]
+        X = df[features]
         y = df["telur_kg"]
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        # 3. Training Model (Random Forest agar lebih dinamis dibanding Linear)
+        # Jika data sangat sedikit, perkecil test_size
+        test_size = 0.2 if len(df) > 10 else 0.1
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
         
-        model_eval = LinearRegression()
-        model_eval.fit(X_train, y_train)
-        y_pred = model_eval.predict(X_test)
-
-        # Hitung Error Real
+        # Settingan model agar sensitif terhadap input manual user
+        model = RandomForestRegressor(
+            n_estimators=200,
+            max_depth=None,
+            min_samples_leaf=1,
+            random_state=42
+        )
+        model.fit(X_train, y_train)
+        
+        # Evaluasi
+        y_pred = model.predict(X_test)
         MAE = mean_absolute_error(y_test, y_pred)
         MSE = mean_squared_error(y_test, y_pred)
-        RMSE = np.sqrt(MSE)
         R2 = r2_score(y_test, y_pred)
 
-        # Metrik per Ayam (Dikasih presisi tinggi biar gak jadi 0)
-        avg_ayam = df["jumlah_ayam"].mean()
-        MAE_per_ayam = MAE / avg_ayam
-        MSE_per_ayam = MSE / (avg_ayam ** 2)
-        RMSE_per_ayam = RMSE / avg_ayam
-
-        # 3. Prediksi Input Manual (Dinamis)
+        # 4. Prediksi Data Manual dari Request
         jml_ayam_input = float(data.get("jumlah_ayam", 0))
         pakan_input = float(data.get("pakan_total_kg", 0))
         kematian_input = float(data.get("kematian", 0))
-        afkir_input = float(data.get("afkir", 0))
+        umur_input = float(data.get("umur_ayam", 0))
+        persen_input = float(data.get("persentase_bertelur", 0))
 
         if jml_ayam_input <= 0:
             return jsonify({"status": "error", "message": "Jumlah ayam harus > 0"}), 400
 
-        # Prediksi kg pake model yang udah di-train
         pakan_per_ayam_input = pakan_input / jml_ayam_input
-        X_input = [[jml_ayam_input, pakan_per_ayam_input, kematian_input, afkir_input]]
-        pred_kg = float(model_eval.predict(X_input)[0])
+        
+        # Susun array input sesuai urutan 'features'
+        X_input = pd.DataFrame([[
+            umur_input, 
+            jml_ayam_input, 
+            pakan_per_ayam_input, 
+            kematian_input, 
+            persen_input
+        ]], columns=features)
+        
+        pred_kg = float(model.predict(X_input)[0])
+        pred_kg = max(pred_kg, 0) # Safety check
 
-        # Safety check biar gak minus kalau input ngaco
-        pred_kg = max(pred_kg, 0)
-
-        # 4. Final Return (Struktur Persis Request Lo)
+        # 5. Response Final
         return jsonify({
             "status": "success",
-            "MAE_kg": round(float(MAE), 3),
-            "MSE_kg": round(float(MSE), 3),
-            "RMSE_kg": round(float(RMSE), 3),
-            "MAE_per_ayam": round(float(MAE_per_ayam), 8), # 8 angka biar gak 0
-            "MSE_per_ayam": round(float(MSE_per_ayam), 10), # 10 angka biar gak 0
-            "RMSE_per_ayam": round(float(RMSE_per_ayam), 8),
-            "R2": round(float(R2), 3),
-            "Train_rows": len(X_train),
-            "Test_rows": len(X_test),
-            "Features_used": list(X.columns),
+            "metrik": {
+                "MAE": round(float(MAE), 4),
+                "R2": round(float(R2), 4),
+                "train_rows": len(X_train)
+            },
             "prediksi": {
                 "harian_telur_kg": round(pred_kg, 2),
                 "bulanan_telur_kg": round(pred_kg * 30, 2),
                 "telur_per_ayam": round(pred_kg / jml_ayam_input, 4),
-                "harian_telur_butir": int(round(pred_kg / 0.0625)),
-                "bulanan_telur_butir": int(round((pred_kg * 30) / 0.0625))
+                "harian_telur_butir": int(round(pred_kg / 0.062)), # Konversi balik ke butir
+                "bulanan_telur_butir": int(round((pred_kg * 30) / 0.062))
             }
         })
+
     except Exception as e:
         import traceback
-        print(traceback.format_exc()) # Print error di terminal flask
+        print(traceback.format_exc())
         return jsonify({"status": "error", "message": str(e)}), 500
         
 @app.route("/", methods=["GET"])
