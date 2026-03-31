@@ -156,7 +156,6 @@ def internal_train_manual(dataset, training_params):
     }
 
 @app.route("/predict-manual", methods=["POST"])
-@app.route("/predict-manual", methods=["POST"])
 def predict_manual():
     data = request.get_json()
     try:
@@ -214,6 +213,8 @@ def predict_manual():
         kematian_input = float(data.get("kematian", 0))
         umur_input = float(data.get("umur_ayam", 0))
         persen_input = float(data.get("persentase_bertelur", 0))
+        jumlah_butir_real = int(round(jml_ayam_input * (persen_input / 100)))
+        jumlah_kg_real = jumlah_butir_real * 0.062
 
         if jml_ayam_input <= 0:
             return jsonify({"status": "error", "message": "Jumlah ayam input harus > 0"}), 400
@@ -239,6 +240,8 @@ def predict_manual():
                 "harian_telur_kg": round(pred_kg, 2),
                 "bulanan_telur_kg": round(pred_kg * 30, 2),
                 "telur_per_ayam": round(pred_kg / jml_ayam_input, 4),
+                "harian_telur_butir_real": jumlah_butir_real,
+                "harian_telur_kg_real": round(jumlah_kg_real, 2),
                 "harian_telur_butir": int(round(pred_kg / 0.062)),
                 "bulanan_telur_butir": int(round((pred_kg * 30) / 0.062)),
                 "produktivitas_per_populasi_persen": round(((pred_kg / 0.062) / jml_ayam_input) * 100, 2)
