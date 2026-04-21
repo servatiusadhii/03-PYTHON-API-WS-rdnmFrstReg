@@ -6,8 +6,23 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 app = Flask(__name__)
+
+# ------------------- CATATAN ------------------------
+# Regression vs Classification
+
+# File yang kamu punya (RandomForestRegressor) itu fungsinya untuk Regresi (memprediksi angka kontinu, seperti berat telur dalam kg).
+# Sedangkan Akurasi, Presisi, Recall, dan F1-Score itu adalah metrik untuk Klasifikasi (RandomForestClassifier) seperti (memprediksi kategori, misal: "Spam" vs "Bukan Spam").
+# Analogi: Kamu nggak bisa ngitung "Akurasi" (Benar/Salah) pada timbangan digital. Kalau berat telur aslinya 1.0 kg dan timbangan bilang 1.1 kg, itu namanya Error (0.1 kg), bukan "Salah" secara mutlak.
+
+# Solusinya: Pakai "Tolerance Threshold"
+# Supaya sesuai dengan permintaan, kita bisa "mengubah" hasil prediksi regresi tadi jadi klasifikasi sementara. Kita anggap prediksi "BENAR" (1) kalau selisihnya tipis banget dari aslinya, dan "SALAH" (0) kalau meleset jauh.
+# Kita bisa tentukan batas toleransinya, misalnya 10%.
+# Formula logikanya:
+# Correct = ∣ytest​−ypred​∣ ≤ (0.1×ytest​)
+# ------------------------------------------------------------
 
 
 @app.route("/train", methods=["POST"])
@@ -59,6 +74,23 @@ def train():
         RMSE = np.sqrt(MSE)
         R2 = r2_score(y_test, y_pred)
 
+        # --- TAMBAHAN LOGIKA THRESHOLD ---
+        threshold = 0.1  # Toleransi 10%
+        y_test_class = np.ones(len(y_test)) # Baseline: anggap semua benar
+        y_pred_class = []
+
+        for real, pred in zip(y_test, y_pred):
+            # Hitung selisih dalam persen
+            margin = abs(real - pred) / real if real != 0 else 0
+            # Jika meleset <= 10%, dianggap 1 (Akurat), jika > 10% dianggap 0 (Gagal)
+            y_pred_class.append(1 if margin <= threshold else 0)
+
+        akurasi_dosen = accuracy_score(y_test_class, y_pred_class)
+        presisi_dosen = precision_score(y_test_class, y_pred_class, zero_division=0)
+        recall_dosen = recall_score(y_test_class, y_pred_class, zero_division=0)
+        f1_dosen = f1_score(y_test_class, y_pred_class, zero_division=0)
+        # -----------------------------------------------
+
         avg_ayam = X_test["jumlah_ayam"].mean()
         MAE_per_ayam = MAE / avg_ayam
         MSE_per_ayam = MSE / (avg_ayam ** 2)
@@ -88,6 +120,13 @@ def train():
             "Train_rows": len(X_train),
             "Test_rows": len(X_test),
             "Features_used": list(X.columns),
+            "metrik": {
+                "akurasi": f"{round(akurasi_dosen * 100, 2)}%",
+                "presisi": round(float(presisi_dosen), 3),
+                "recall": round(float(recall_dosen), 3),
+                "f1_score": round(float(f1_dosen), 3),
+                "keterangan": "Toleransi error 10%"
+            },
             "prediksi": {
                 "harian_telur_kg": round(harian_telur_kg, 2),
                 "bulanan_telur_kg": round(bulanan_telur_kg, 2),
@@ -218,6 +257,17 @@ def predict_manual():
         MAE = mean_absolute_error(y_test, y_pred)
         R2 = r2_score(y_test, y_pred) if len(y_test) > 1 else 1.0
 
+        # --- TAMBAHAN LOGIKA THRESHOLD ---
+        threshold = 0.1
+        y_test_class = np.ones(len(y_test))
+        y_pred_class = [1 if (abs(r - p) / r if r != 0 else 0) <= threshold else 0 for r, p in zip(y_test, y_pred)]
+        
+        acc_dosen = accuracy_score(y_test_class, y_pred_class)
+        pre_dosen = precision_score(y_test_class, y_pred_class, zero_division=0)
+        rec_dosen = recall_score(y_test_class, y_pred_class, zero_division=0)
+        f1_dosen = f1_score(y_test_class, y_pred_class, zero_division=0)
+        # -----------------------------------------------
+
         # =========================
         # 6. INPUT USER
         # =========================
@@ -261,7 +311,10 @@ def predict_manual():
             "metrik": {
                 "MAE": round(float(MAE), 4),
                 "R2": round(float(R2), 4),
-                "train_rows": len(X_train)
+                "akurasi_dosen": f"{round(acc_dosen * 100, 2)}%",
+                "presisi_dosen": round(float(pre_dosen), 3),
+                "recall_dosen": round(float(rec_dosen), 3),
+                "f1_score_dosen": round(float(f1_dosen), 3)
             },
             "prediksi": {
                 # HASIL UTAMA (RUMUS)
