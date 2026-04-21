@@ -5,6 +5,19 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
+# ------------------- CATATAN ------------------------
+# Regression vs Classification
+
+# File yang kamu punya (RandomForestRegressor) itu fungsinya untuk Regresi (memprediksi angka kontinu, seperti berat telur dalam kg).
+# Sedangkan Akurasi, Presisi, Recall, dan F1-Score itu adalah metrik untuk Klasifikasi (RandomForestClassifier) seperti (memprediksi kategori, misal: "Spam" vs "Bukan Spam").
+# Analogi: Kamu nggak bisa ngitung "Akurasi" (Benar/Salah) pada timbangan digital. Kalau berat telur aslinya 1.0 kg dan timbangan bilang 1.1 kg, itu namanya Error (0.1 kg), bukan "Salah" secara mutlak.
+
+# Solusinya: Pakai "Tolerance Threshold"
+# Supaya sesuai dengan permintaan, kita bisa "mengubah" hasil prediksi regresi tadi jadi klasifikasi sementara. Kita anggap prediksi "BENAR" (1) kalau selisihnya tipis banget dari aslinya, dan "SALAH" (0) kalau meleset jauh.
+# Kita bisa tentukan batas toleransinya, misalnya 10%.
+# Formula logikanya:
+# Correct = ∣ytest​−ypred​∣ ≤ (0.1×ytest​)
+# ------------------------------------------------------------
 
 def train_model(dataset, training_params):
     """
