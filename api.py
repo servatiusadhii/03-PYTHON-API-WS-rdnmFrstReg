@@ -341,7 +341,7 @@ def predict_manual():
         
 @app.route("/", methods=["GET"])
 def home():
-    return "🚀 API Training Model Produksi Telur (ANTI DATA BOCOR)"
+    return "🚀 API Training Model Produksi Telur (ANTI DATA BOCOR) + Presisi"
 
 
 if __name__ == "__main__":
