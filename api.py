@@ -11,7 +11,7 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 app = Flask(__name__)
 
 # ------------------- CATATAN ------------------------
-# Regression vs Classification
+# Random Forest Regression vs Random Forest Classification
 
 # File yang kamu punya (RandomForestRegressor) itu fungsinya untuk Regresi (memprediksi angka kontinu, seperti berat telur dalam kg).
 # Sedangkan Akurasi, Presisi, Recall, dan F1-Score itu adalah metrik untuk Klasifikasi (RandomForestClassifier) seperti (memprediksi kategori, misal: "Spam" vs "Bukan Spam").
